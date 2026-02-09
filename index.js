@@ -200,13 +200,14 @@ app.get('/', (req, res) => {
     theme: 'Lynx Premium',
     status: 'operational',
     endpoints: {
+      login: 'POST /api/login - Authenticate and get API key',
       sms: 'POST /api/sms - Receive and log SMS data',
       chatSend: 'POST /api/chat - Send a chat message',
       chatFetch: 'GET /api/chat - Fetch last 50 messages',
       health: 'GET /health - Server health check'
     },
-    security: 'API Key required for all endpoints',
-    documentation: 'Include x-api-key in headers or apiKey in request body'
+    security: 'API Key required for all endpoints except /api/login',
+    documentation: 'Use /api/login to get your API key, then include x-api-key in headers'
   });
 });
 
@@ -242,6 +243,73 @@ app.get('/health', async (req, res) => {
       database: 'disconnected',
       error: error.message,
       timestamp: new Date().toISOString()
+    });
+  }
+});
+
+// ----------------------------------------------------------------------------
+// AUTHENTICATION ENDPOINT
+// ----------------------------------------------------------------------------
+
+/**
+ * POST /api/login - Authenticate and get API key
+ * 
+ * Request Body:
+ * {
+ *   password: string
+ * }
+ * 
+ * Note: This endpoint does NOT require API key (it returns the API key)
+ */
+app.post('/api/login', async (req, res) => {
+  try {
+    const { password } = req.body;
+    
+    // Validation
+    if (!password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password is required'
+      });
+    }
+    
+    // Get admin password from environment
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+    
+    if (!ADMIN_PASSWORD) {
+      console.error('⚠️  ADMIN_PASSWORD not set in environment variables!');
+      return res.status(500).json({
+        success: false,
+        message: 'Server configuration error'
+      });
+    }
+    
+    // Compare password
+    if (password === ADMIN_PASSWORD) {
+      // Success - return API key
+      console.log('✅ Successful login attempt');
+      
+      return res.json({
+        success: true,
+        apiKey: API_KEY,
+        message: 'Login successful'
+      });
+    } else {
+      // Failed authentication
+      console.log('❌ Failed login attempt');
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid credentials'
+      });
+    }
+    
+  } catch (error) {
+    console.error('❌ Login Error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Login failed',
+      error: error.message
     });
   }
 });
