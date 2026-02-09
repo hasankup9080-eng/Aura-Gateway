@@ -380,7 +380,8 @@ app.get('/api/sms', validateApiKey, async (req, res) => {
  * {
  *   username: string,
  *   message: string,
- *   device_id?: string (optional, for owner detection),
+ *   device_id?: string (snake_case - preferred),
+ *   deviceId?: string (camelCase - also accepted),
  *   secret_key?: string (optional, for owner verification)
  * }
  */
@@ -388,7 +389,7 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { username, message, device_id, secret_key } = req.body;
+    const { username, message, device_id, deviceId, secret_key } = req.body;
     
     // Validation
     if (!username || !message) {
@@ -399,8 +400,11 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
       });
     }
     
+    // Accept both device_id (snake_case) and deviceId (camelCase) with fallback
+    const final_device_id = device_id || deviceId || 'unknown';
+    
     // Detect owner role
-    const role = detectOwnerRole(device_id, message, secret_key);
+    const role = detectOwnerRole(final_device_id, message, secret_key);
     
     // Create chat message
     const id = uuidv4();
@@ -418,7 +422,7 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
       username.trim(),
       message.trim(),
       role,
-      device_id || 'unknown',
+      final_device_id,
       timestamp
     ];
     
@@ -430,6 +434,7 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
     console.log(`${roleIcon} NEW CHAT MESSAGE SAVED TO DATABASE`);
     console.log(`   User: ${chatMessage.username}`);
     console.log(`   Role: ${chatMessage.role}`);
+    console.log(`   Device: ${chatMessage.device_id}`);
     console.log(`   Message: ${chatMessage.message}`);
     console.log(`   Time: ${formatTimestamp(chatMessage.timestamp)}`);
     
@@ -441,7 +446,8 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
         username: chatMessage.username,
         message: chatMessage.message,
         role: chatMessage.role,
-        deviceId: chatMessage.device_id,
+        device_id: chatMessage.device_id,
+        deviceId: chatMessage.device_id, // Return both formats for compatibility
         timestamp: formatTimestamp(chatMessage.timestamp),
         isOwner: chatMessage.role === '★ OWNER'
       }
@@ -485,7 +491,8 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
       username: row.username,
       message: row.message,
       role: row.role,
-      deviceId: row.device_id,
+      device_id: row.device_id,
+      deviceId: row.device_id, // Return both formats for compatibility
       timestamp: formatTimestamp(row.timestamp),
       isOwner: row.role === '★ OWNER'
     }));
