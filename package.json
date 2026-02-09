@@ -1,0 +1,44 @@
+{
+  "name": "aura-gateway-backend",
+  "version": "2.0.0",
+  "description": "⚡ Premium Backend Server for Aura Gateway Android App - Lynx Aesthetic with PostgreSQL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [
+    "aura",
+    "gateway",
+    "sms",
+    "chat",
+    "backend",
+    "lynx",
+    "premium",
+    "railway",
+    "postgresql",
+    "database"
+  ],
+  "author": "Aura Gateway Team",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.1",
+    "pg": "^8.11.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=14.0.0",
+    "npm": ">=6.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/aura-gateway-backend"
+  }
+}
