@@ -1,7 +1,7 @@
 {
-  "name": "aura-gateway-backend",
+  "name": "aura-gateway",
   "version": "3.5.0",
-  "description": "⚡ Aura Gateway Premium Backend - v3.5 | PostgreSQL, Device Health & Smart Queue",
+  "description": "⚡ Aura Gateway - Premium Backend Server with PostgreSQL | Lynx Aesthetic",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -12,25 +12,24 @@
     "aura",
     "gateway",
     "sms",
+    "chat",
     "otp",
-    "bkash",
-    "nagad",
     "postgresql",
-    "lynx",
-    "railway"
+    "express",
+    "api"
   ],
-  "author": "Aura Gateway Owner",
-  "license": "ISC",
+  "author": "Lynx Development",
+  "license": "MIT",
   "dependencies": {
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
+    "express": "^4.18.2",
     "pg": "^8.11.3",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "body-parser": "^1.20.2",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.0.1"
   },
   "engines": {
     "node": ">=18.0.0"
