@@ -1,9 +1,14 @@
 /**
- * ⚡ AURA GATEWAY - Premium Backend Server
+ * ⚡ AURA GATEWAY - Premium Backend Server v3.5
  * Lynx Aesthetic | Dark Theme Compatible
  * Production-Ready for Railway Deployment
  * 
- * NOW WITH POSTGRESQL PERSISTENCE
+ * Enhanced Features:
+ * - Device Health Monitoring
+ * - Bangladeshi Phone Validation
+ * - OTP Cooldown Protection
+ * - Smart SMS Queue Management
+ * - Threaded Chat Conversations
  */
 
 require('dotenv').config();
@@ -13,9 +18,9 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const { Pool } = require('pg');
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // APPLICATION CONFIGURATION
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -23,8 +28,9 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 
 // Security Configuration
 const API_KEY = process.env.API_KEY || 'lynx-aura-gateway-2025';
-const ADMIN_DEVICE_ID = process.env.ADMIN_DEVICE_ID || 'admin-device-001';
+const ADMIN_DEVICE_ID = 'REAL-MENA-RZO5-0177'; // HARDCODED - DO NOT CHANGE
 const SECRET_OWNER_KEY = process.env.SECRET_OWNER_KEY || '★LYNX★';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'lynx-admin-2025';
 
 // Middleware
 app.use(cors());
@@ -39,9 +45,9 @@ app.use((req, res, next) => {
   next();
 });
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // POSTGRESQL DATABASE CONFIGURATION
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -62,16 +68,19 @@ pool.on('error', (err) => {
   console.error('💥 Unexpected database error:', err);
 });
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // DATABASE SCHEMA INITIALIZATION
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 /**
  * Create database tables if they don't exist
+ * Auto-initializes on server startup
  */
 const initializeDatabase = async () => {
   try {
+    console.log('\n════════════════════════════════════════════════════════════════');
     console.log('📊 Initializing database schema...');
+    console.log('════════════════════════════════════════════════════════════════\n');
 
     // Create SMS Logs Table
     await pool.query(`
@@ -86,19 +95,73 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ Table "sms_logs" ready');
 
-    // Create Chat Messages Table
+    // Create Users Table with Payment Verification
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        username VARCHAR(255) NOT NULL UNIQUE,
+        phone VARCHAR(20) NOT NULL,
+        payment_number VARCHAR(20) NOT NULL,
+        provider VARCHAR(50) NOT NULL CHECK (provider IN ('bKash', 'Nagad', 'Rocket')),
+        otp_code VARCHAR(6),
+        is_verified BOOLEAN DEFAULT FALSE,
+        device_id VARCHAR(255),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log('✅ Table "users" ready with payment verification');
+
+    // Create Outgoing SMS Table (Android SMS Gateway)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS outgoing_sms (
+        id UUID PRIMARY KEY,
+        recipient_number VARCHAR(20) NOT NULL,
+        message_text TEXT NOT NULL,
+        status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+        created_at TIMESTAMP DEFAULT NOW(),
+        sent_at TIMESTAMP
+      );
+    `);
+    console.log('✅ Table "outgoing_sms" ready (Android SMS Gateway)');
+
+    // Create Device Status Table (NEW - Device Health Monitoring)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS device_status (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        device_id VARCHAR(255) NOT NULL UNIQUE,
+        battery_level INTEGER CHECK (battery_level >= 0 AND battery_level <= 100),
+        is_charging BOOLEAN DEFAULT FALSE,
+        last_updated TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log('✅ Table "device_status" ready (Device Health Monitoring)');
+
+    // Create Chat Messages Table with Reply Support
     await pool.query(`
       CREATE TABLE IF NOT EXISTS chat_messages (
         id UUID PRIMARY KEY,
+        sender_id VARCHAR(255),
         username VARCHAR(255) NOT NULL,
         message TEXT NOT NULL,
         role VARCHAR(50) NOT NULL DEFAULT 'User',
         device_id VARCHAR(255),
+        reply_to_id UUID,
         timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        FOREIGN KEY (reply_to_id) REFERENCES chat_messages(id) ON DELETE SET NULL
       );
     `);
-    console.log('✅ Table "chat_messages" ready');
+    console.log('✅ Table "chat_messages" ready with threaded reply support');
+
+    // Create OTP Request Tracking Table (NEW - For Cooldown)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS otp_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        phone_number VARCHAR(20) NOT NULL,
+        requested_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log('✅ Table "otp_requests" ready (OTP Cooldown Tracking)');
 
     // Create indexes for better performance
     await pool.query(`
@@ -107,18 +170,35 @@ const initializeDatabase = async () => {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat_messages(timestamp DESC);
     `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages(reply_to_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_outgoing_sms_status ON outgoing_sms(status, created_at);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_device_status_device ON device_status(device_id);
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_otp_requests_phone ON otp_requests(phone_number, requested_at);
+    `);
     console.log('✅ Database indexes created');
 
+    console.log('\n════════════════════════════════════════════════════════════════');
     console.log('🎉 Database initialization complete!');
+    console.log('════════════════════════════════════════════════════════════════\n');
   } catch (error) {
     console.error('❌ Database initialization failed:', error);
     throw error;
   }
 };
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // HELPER FUNCTIONS
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 /**
  * API Key Validation Middleware
@@ -146,6 +226,57 @@ const validateApiKey = (req, res, next) => {
 };
 
 /**
+ * Validate Bangladeshi Phone Number
+ * Must be 11 digits starting with 01
+ * @param {string} phone - Phone number to validate
+ * @returns {boolean} - True if valid
+ */
+const validateBangladeshiPhone = (phone) => {
+  const regex = /^01[0-9]{9}$/;
+  return regex.test(phone);
+};
+
+/**
+ * Generate 6-digit OTP
+ * @returns {string} - 6-digit OTP code
+ */
+const generateOTP = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+/**
+ * Check OTP Request Cooldown
+ * Prevents more than 3 requests in 15 minutes
+ * @param {string} phone - Phone number to check
+ * @returns {Promise<boolean>} - True if cooldown active, false if allowed
+ */
+const checkOTPCooldown = async (phone) => {
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  
+  const result = await pool.query(
+    `SELECT COUNT(*) as count 
+     FROM otp_requests 
+     WHERE phone_number = $1 
+     AND requested_at > $2`,
+    [phone, fifteenMinutesAgo]
+  );
+  
+  const requestCount = parseInt(result.rows[0].count);
+  return requestCount >= 3;
+};
+
+/**
+ * Log OTP Request
+ * @param {string} phone - Phone number
+ */
+const logOTPRequest = async (phone) => {
+  await pool.query(
+    `INSERT INTO otp_requests (phone_number) VALUES ($1)`,
+    [phone]
+  );
+};
+
+/**
  * Detect if user is an OWNER
  * @param {string} deviceId - Device ID from request
  * @param {string} message - Message content
@@ -153,7 +284,7 @@ const validateApiKey = (req, res, next) => {
  * @returns {string} - 'User' or '★ OWNER'
  */
 const detectOwnerRole = (deviceId, message, secretKey) => {
-  // Check if device ID matches admin device
+  // Check if device ID matches admin device (HARDCODED)
   if (deviceId === ADMIN_DEVICE_ID) {
     return '★ OWNER';
   }
@@ -180,13 +311,13 @@ const formatTimestamp = (date) => {
   return date.toISOString();
 };
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // API ROUTES
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
-// ----------------------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────────────────
 // ROOT & HEALTH CHECK
-// ----------------------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────────────────
 
 /**
  * Root endpoint - API Information
@@ -195,203 +326,301 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     app: '⚡ AURA GATEWAY',
-    version: '2.0.0',
+    version: '3.5.0',
     database: 'PostgreSQL',
     theme: 'Lynx Premium',
     status: 'operational',
+    features: {
+      payment_verification: true,
+      otp_system: true,
+      otp_cooldown: true,
+      sms_gateway: true,
+      chat_replies: true,
+      device_health: true,
+      bangladeshi_validation: true
+    },
     endpoints: {
+      // Authentication
       login: 'POST /api/login - Authenticate and get API key',
+      
+      // User Management
+      signup: 'POST /api/signup - Register with payment verification & OTP cooldown',
+      verifyOtp: 'POST /api/verify-otp - Verify OTP code',
+      
+      // SMS Gateway (Android App)
+      pendingSms: 'GET /api/pending-sms - Get oldest pending SMS',
+      smsSent: 'POST /api/sms-sent - Mark SMS as sent',
+      
+      // Device Health
+      deviceHealth: 'POST /api/device-health - Update device status (battery, charging)',
+      
+      // Chat System
+      chatSend: 'POST /api/chat - Send chat message (with reply support)',
+      chatFetch: 'GET /api/chat - Fetch messages (threaded with parent data)',
+      
+      // SMS Logging
       sms: 'POST /api/sms - Receive and log SMS data',
-      chatSend: 'POST /api/chat - Send a chat message',
-      chatFetch: 'GET /api/chat - Fetch last 50 messages',
+      
+      // System
       health: 'GET /health - Server health check'
     },
-    security: 'API Key required for all endpoints except /api/login',
-    documentation: 'Use /api/login to get your API key, then include x-api-key in headers'
+    admin: {
+      deviceId: ADMIN_DEVICE_ID,
+      ownerBadge: '★ OWNER'
+    }
   });
 });
 
 /**
- * Health Check Endpoint with Database Status
+ * Health Check Endpoint
  */
 app.get('/health', async (req, res) => {
   try {
     // Test database connection
-    const result = await pool.query('SELECT NOW()');
-    
-    // Get table counts
-    const smsCount = await pool.query('SELECT COUNT(*) FROM sms_logs');
-    const chatCount = await pool.query('SELECT COUNT(*) FROM chat_messages');
+    await pool.query('SELECT NOW()');
     
     res.json({
       success: true,
       status: 'healthy',
       database: 'connected',
-      uptime: process.uptime(),
-      timestamp: new Date().toISOString(),
-      memory: {
-        smsCount: parseInt(smsCount.rows[0].count),
-        chatCount: parseInt(chatCount.rows[0].count)
-      },
-      dbTime: result.rows[0].now
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('❌ Health check failed:', error);
-    res.status(503).json({
+    res.status(500).json({
       success: false,
       status: 'unhealthy',
       database: 'disconnected',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// ----------------------------------------------------------------------------
-// AUTHENTICATION ENDPOINT
-// ----------------------------------------------------------------------------
-
-/**
- * POST /api/login - Authenticate and get API key
- * 
- * Request Body:
- * {
- *   password: string
- * }
- * 
- * Note: This endpoint does NOT require API key (it returns the API key)
- */
-app.post('/api/login', async (req, res) => {
-  try {
-    const { password } = req.body;
-    
-    // Validation
-    if (!password) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password is required'
-      });
-    }
-    
-    // Get admin password from environment
-    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-    
-    if (!ADMIN_PASSWORD) {
-      console.error('⚠️  ADMIN_PASSWORD not set in environment variables!');
-      return res.status(500).json({
-        success: false,
-        message: 'Server configuration error'
-      });
-    }
-    
-    // Compare password
-    if (password === ADMIN_PASSWORD) {
-      // Success - return API key
-      console.log('✅ Successful login attempt');
-      
-      return res.json({
-        success: true,
-        apiKey: API_KEY,
-        message: 'Login successful'
-      });
-    } else {
-      // Failed authentication
-      console.log('❌ Failed login attempt');
-      
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid credentials'
-      });
-    }
-    
-  } catch (error) {
-    console.error('❌ Login Error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Login failed',
       error: error.message
     });
   }
 });
 
-// ----------------------------------------------------------------------------
-// SMS ENDPOINT
-// ----------------------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────────────────
+// AUTHENTICATION
+// ────────────────────────────────────────────────────────────────────────────
 
 /**
- * POST /api/sms - Receive and log SMS data to PostgreSQL
- * 
- * Request Body:
- * {
- *   sender: string (phone number),
- *   message: string,
- *   device_id: string,
- *   timestamp?: string (optional, auto-generated if not provided)
- * }
+ * POST /api/login - Admin Login
+ * Returns API key for authenticated users
  */
-app.post('/api/sms', validateApiKey, async (req, res) => {
-  const client = await pool.connect();
-  
+app.post('/api/login', async (req, res) => {
   try {
-    const { sender, message, device_id, timestamp } = req.body;
+    const { username, password, device_id, deviceId } = req.body;
     
-    // Validation
-    if (!sender || !message || !device_id) {
+    // Support both device_id and deviceId
+    const finalDeviceId = device_id || deviceId;
+    
+    if (!username || !password || !finalDeviceId) {
       return res.status(400).json({
         success: false,
         error: 'Missing required fields',
-        required: ['sender', 'message', 'device_id']
+        required: ['username', 'password', 'device_id']
       });
     }
     
-    // Create SMS entry
-    const id = uuidv4();
-    const smsTimestamp = timestamp ? new Date(timestamp) : new Date();
+    // Check if admin credentials
+    if (password === ADMIN_PASSWORD) {
+      console.log(`\n════════════════════════════════════════════════════════════════`);
+      console.log(`✅ ADMIN LOGIN SUCCESSFUL`);
+      console.log(`   Username: ${username}`);
+      console.log(`   Device: ${finalDeviceId}`);
+      console.log(`════════════════════════════════════════════════════════════════\n`);
+      
+      return res.json({
+        success: true,
+        message: 'Login successful',
+        apiKey: API_KEY,
+        role: finalDeviceId === ADMIN_DEVICE_ID ? '★ OWNER' : 'Admin',
+        device_id: finalDeviceId
+      });
+    }
     
-    // Insert into PostgreSQL
-    const query = `
-      INSERT INTO sms_logs (id, sender, message, device_id, timestamp)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *;
-    `;
+    // Check database for regular users
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE username = $1 AND is_verified = true',
+      [username]
+    );
     
-    const values = [
-      id,
-      sender.trim(),
-      message.trim(),
-      device_id.trim(),
-      smsTimestamp
-    ];
+    if (userResult.rows.length === 0) {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid credentials or unverified account'
+      });
+    }
     
-    const result = await client.query(query, values);
-    const smsEntry = result.rows[0];
+    const user = userResult.rows[0];
     
-    // Premium Console Logging
-    console.log('📱 NEW SMS RECEIVED & SAVED TO DATABASE');
-    console.log(`   ID: ${smsEntry.id}`);
-    console.log(`   From: ${smsEntry.sender}`);
-    console.log(`   Device: ${smsEntry.device_id}`);
-    console.log(`   Message: ${smsEntry.message}`);
-    console.log(`   Time: ${formatTimestamp(smsEntry.timestamp)}`);
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`✅ USER LOGIN SUCCESSFUL`);
+    console.log(`   Username: ${username}`);
+    console.log(`   Phone: ${user.phone}`);
+    console.log(`   Device: ${finalDeviceId}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
     
-    res.status(201).json({
+    res.json({
       success: true,
-      message: '✅ SMS logged successfully to database',
-      data: {
-        id: smsEntry.id,
-        sender: smsEntry.sender,
-        message: smsEntry.message,
-        deviceId: smsEntry.device_id,
-        timestamp: smsEntry.timestamp,
-        createdAt: smsEntry.created_at
+      message: 'Login successful',
+      apiKey: API_KEY,
+      role: 'User',
+      user: {
+        id: user.id,
+        username: user.username,
+        phone: user.phone
       }
     });
     
   } catch (error) {
-    console.error('❌ SMS Error:', error);
+    console.error('❌ Login Error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to log SMS',
+      error: 'Login failed',
+      message: error.message
+    });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// USER MANAGEMENT WITH ENHANCED VALIDATION
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/signup - User Registration with Payment Verification
+ * Enhanced with:
+ * - Bangladeshi phone validation (11 digits starting with 01)
+ * - OTP cooldown (max 3 requests per number in 15 minutes)
+ */
+app.post('/api/signup', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { username, phone, payment_number, provider } = req.body;
+    
+    // Validation
+    if (!username || !phone || !payment_number || !provider) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        required: ['username', 'phone', 'payment_number', 'provider']
+      });
+    }
+    
+    // Validate Bangladeshi phone numbers
+    if (!validateBangladeshiPhone(phone)) {
+      console.log(`\n⚠️  INVALID PHONE FORMAT`);
+      console.log(`   Phone: ${phone}`);
+      console.log(`   Required: 11 digits starting with 01`);
+      
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid phone number format',
+        message: 'Phone number must be 11 digits starting with 01 (e.g., 01712345678)'
+      });
+    }
+    
+    if (!validateBangladeshiPhone(payment_number)) {
+      console.log(`\n⚠️  INVALID PAYMENT NUMBER FORMAT`);
+      console.log(`   Payment Number: ${payment_number}`);
+      console.log(`   Required: 11 digits starting with 01`);
+      
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment number format',
+        message: 'Payment number must be 11 digits starting with 01 (e.g., 01812345678)'
+      });
+    }
+    
+    // Validate provider
+    if (!['bKash', 'Nagad', 'Rocket'].includes(provider)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid payment provider',
+        allowed: ['bKash', 'Nagad', 'Rocket']
+      });
+    }
+    
+    // Check OTP cooldown
+    const isCooldownActive = await checkOTPCooldown(phone);
+    if (isCooldownActive) {
+      console.log(`\n🚫 OTP COOLDOWN ACTIVE`);
+      console.log(`   Phone: ${phone}`);
+      console.log(`   Limit: 3 requests per 15 minutes`);
+      
+      return res.status(429).json({
+        success: false,
+        error: 'Too many OTP requests',
+        message: 'You can only request OTP 3 times per 15 minutes. Please wait before trying again.',
+        cooldown: '15 minutes'
+      });
+    }
+    
+    await client.query('BEGIN');
+    
+    // Check if username already exists
+    const existingUser = await client.query(
+      'SELECT id FROM users WHERE username = $1',
+      [username]
+    );
+    
+    if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        error: 'Username already exists'
+      });
+    }
+    
+    // Generate OTP
+    const otpCode = generateOTP();
+    const userId = uuidv4();
+    
+    // Insert user
+    await client.query(
+      `INSERT INTO users (id, username, phone, payment_number, provider, otp_code, is_verified)
+       VALUES ($1, $2, $3, $4, $5, $6, false)`,
+      [userId, username, phone, payment_number, provider, otpCode]
+    );
+    
+    // Queue OTP SMS
+    const smsId = uuidv4();
+    const smsMessage = `Your Aura Gateway OTP is: ${otpCode}. Valid for 15 minutes.`;
+    
+    await client.query(
+      `INSERT INTO outgoing_sms (id, recipient_number, message_text, status)
+       VALUES ($1, $2, $3, 'pending')`,
+      [smsId, phone, smsMessage]
+    );
+    
+    // Log OTP request for cooldown tracking
+    await logOTPRequest(phone);
+    
+    await client.query('COMMIT');
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`👤 NEW USER SIGNUP`);
+    console.log(`   Username: ${username}`);
+    console.log(`   Phone: ${phone} ✓`);
+    console.log(`   Payment: ${payment_number} (${provider}) ✓`);
+    console.log(`   OTP: ${otpCode}`);
+    console.log(`   📱 OTP SMS queued for Android gateway`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'User registered successfully. OTP sent via SMS.',
+      user: {
+        id: userId,
+        username,
+        phone
+      },
+      otp_sent: true
+    });
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Signup Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Signup failed',
       message: error.message
     });
   } finally {
@@ -400,66 +629,322 @@ app.post('/api/sms', validateApiKey, async (req, res) => {
 });
 
 /**
- * GET /api/sms - Retrieve all SMS messages from database
+ * POST /api/verify-otp - Verify OTP Code
  */
-app.get('/api/sms', validateApiKey, async (req, res) => {
+app.post('/api/verify-otp', async (req, res) => {
   try {
-    const limit = Math.min(parseInt(req.query.limit) || 100, 1000);
+    const { username, otp_code } = req.body;
     
-    const query = `
-      SELECT id, sender, message, device_id, timestamp, created_at
-      FROM sms_logs
-      ORDER BY timestamp DESC
-      LIMIT $1;
-    `;
+    if (!username || !otp_code) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        required: ['username', 'otp_code']
+      });
+    }
     
-    const result = await pool.query(query, [limit]);
+    // Find user and verify OTP
+    const result = await pool.query(
+      `UPDATE users 
+       SET is_verified = true, otp_code = NULL
+       WHERE username = $1 AND otp_code = $2 AND is_verified = false
+       RETURNING id, username, phone`,
+      [username, otp_code]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid OTP or user already verified'
+      });
+    }
+    
+    const user = result.rows[0];
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`✅ OTP VERIFICATION SUCCESS`);
+    console.log(`   User: ${user.username}`);
+    console.log(`   Phone: ${user.phone}`);
+    console.log(`   Account activated!`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
     
     res.json({
       success: true,
-      count: result.rows.length,
-      data: result.rows.map(row => ({
-        id: row.id,
-        sender: row.sender,
-        message: row.message,
-        deviceId: row.device_id,
-        timestamp: row.timestamp,
-        createdAt: row.created_at
-      }))
+      message: 'Account verified successfully',
+      user: {
+        id: user.id,
+        username: user.username,
+        phone: user.phone
+      }
     });
+    
   } catch (error) {
-    console.error('❌ SMS Fetch Error:', error);
+    console.error('❌ OTP Verification Error:', error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch SMS messages',
+      error: 'Verification failed',
       message: error.message
     });
   }
 });
 
-// ----------------------------------------------------------------------------
-// PREMIUM GLOBAL CHAT ENDPOINTS
-// ----------------------------------------------------------------------------
+// ────────────────────────────────────────────────────────────────────────────
+// DEVICE HEALTH MONITORING (NEW)
+// ────────────────────────────────────────────────────────────────────────────
 
 /**
- * POST /api/chat - Send a chat message and save to PostgreSQL
- * 
- * Request Body:
- * {
- *   username: string,
- *   message: string,
- *   device_id?: string (snake_case - preferred),
- *   deviceId?: string (camelCase - also accepted),
- *   secret_key?: string (optional, for owner verification)
- * }
+ * POST /api/device-health - Update Device Status
+ * Uses UPSERT logic (INSERT ... ON CONFLICT UPDATE)
+ * Hardcoded for REAL-MENA-RZO5-0177
+ */
+app.post('/api/device-health', validateApiKey, async (req, res) => {
+  try {
+    const { battery_level, is_charging } = req.body;
+    
+    // Validation
+    if (battery_level === undefined || is_charging === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        required: ['battery_level', 'is_charging']
+      });
+    }
+    
+    if (battery_level < 0 || battery_level > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Battery level must be between 0 and 100'
+      });
+    }
+    
+    // UPSERT operation for ADMIN_DEVICE_ID (HARDCODED)
+    const result = await pool.query(
+      `INSERT INTO device_status (device_id, battery_level, is_charging, last_updated)
+       VALUES ($1, $2, $3, NOW())
+       ON CONFLICT (device_id) 
+       DO UPDATE SET 
+         battery_level = $2,
+         is_charging = $3,
+         last_updated = NOW()
+       RETURNING *`,
+      [ADMIN_DEVICE_ID, battery_level, is_charging]
+    );
+    
+    const deviceStatus = result.rows[0];
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`🔋 DEVICE HEALTH UPDATE`);
+    console.log(`   Device: ${ADMIN_DEVICE_ID}`);
+    console.log(`   Battery: ${battery_level}%`);
+    console.log(`   Charging: ${is_charging ? 'Yes ⚡' : 'No'}`);
+    console.log(`   Updated: ${deviceStatus.last_updated}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.json({
+      success: true,
+      message: 'Device health updated',
+      device: {
+        id: deviceStatus.id,
+        device_id: deviceStatus.device_id,
+        battery_level: deviceStatus.battery_level,
+        is_charging: deviceStatus.is_charging,
+        last_updated: deviceStatus.last_updated
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Device Health Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update device health',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/device-health - Get Current Device Status
+ */
+app.get('/api/device-health', validateApiKey, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM device_status WHERE device_id = $1',
+      [ADMIN_DEVICE_ID]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Device status not found',
+        message: 'No health data available for this device'
+      });
+    }
+    
+    const deviceStatus = result.rows[0];
+    
+    res.json({
+      success: true,
+      device: {
+        id: deviceStatus.id,
+        device_id: deviceStatus.device_id,
+        battery_level: deviceStatus.battery_level,
+        is_charging: deviceStatus.is_charging,
+        last_updated: deviceStatus.last_updated
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Device Health Fetch Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch device health',
+      message: error.message
+    });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// SMS GATEWAY (ANDROID APP INTEGRATION)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/pending-sms - Fetch OLDEST Pending SMS for Android App
+ * Enhanced: Returns oldest SMS first for FIFO processing
+ */
+app.get('/api/pending-sms', validateApiKey, async (req, res) => {
+  try {
+    // Fetch the oldest pending SMS (FIFO - First In, First Out)
+    const result = await pool.query(
+      `SELECT * FROM outgoing_sms 
+       WHERE status = 'pending' 
+       ORDER BY created_at ASC 
+       LIMIT 1`
+    );
+    
+    if (result.rows.length === 0) {
+      return res.json({
+        success: true,
+        pending: false,
+        message: 'No pending SMS'
+      });
+    }
+    
+    const sms = result.rows[0];
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`📱 OLDEST PENDING SMS RETRIEVED`);
+    console.log(`   ID: ${sms.id}`);
+    console.log(`   To: ${sms.recipient_number}`);
+    console.log(`   Message: ${sms.message_text}`);
+    console.log(`   Created: ${sms.created_at}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.json({
+      success: true,
+      pending: true,
+      sms: {
+        id: sms.id,
+        recipient: sms.recipient_number,
+        message: sms.message_text,
+        created_at: sms.created_at
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ Pending SMS Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch pending SMS',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/sms-sent - Android App Reports SMS Sent
+ */
+app.post('/api/sms-sent', validateApiKey, async (req, res) => {
+  try {
+    const { sms_id, status } = req.body;
+    
+    if (!sms_id || !status) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        required: ['sms_id', 'status']
+      });
+    }
+    
+    if (!['sent', 'failed'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid status',
+        allowed: ['sent', 'failed']
+      });
+    }
+    
+    const result = await pool.query(
+      `UPDATE outgoing_sms 
+       SET status = $1, sent_at = NOW() 
+       WHERE id = $2 
+       RETURNING *`,
+      [status, sms_id]
+    );
+    
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'SMS not found'
+      });
+    }
+    
+    const sms = result.rows[0];
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`✅ SMS STATUS UPDATE`);
+    console.log(`   ID: ${sms.id}`);
+    console.log(`   Recipient: ${sms.recipient_number}`);
+    console.log(`   Status: ${status.toUpperCase()}`);
+    console.log(`   Sent At: ${sms.sent_at}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.json({
+      success: true,
+      message: 'SMS status updated',
+      sms: {
+        id: sms.id,
+        recipient: sms.recipient_number,
+        status: sms.status,
+        sent_at: sms.sent_at
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ SMS Update Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update SMS status',
+      message: error.message
+    });
+  }
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// CHAT SYSTEM WITH THREADED CONVERSATIONS
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/chat - Send Chat Message with Reply Support
  */
 app.post('/api/chat', validateApiKey, async (req, res) => {
   const client = await pool.connect();
   
   try {
-    const { username, message, device_id, deviceId, secret_key } = req.body;
+    const { username, message, device_id, deviceId, reply_to_id, secret_key } = req.body;
     
-    // Validation
+    // Support both device_id and deviceId
+    const finalDeviceId = device_id || deviceId;
+    
     if (!username || !message) {
       return res.status(400).json({
         success: false,
@@ -468,54 +953,83 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
       });
     }
     
-    // Accept both device_id (snake_case) and deviceId (camelCase) with fallback
-    const final_device_id = device_id || deviceId || 'unknown';
-    
     // Detect owner role
-    const role = detectOwnerRole(final_device_id, message, secret_key);
+    const role = detectOwnerRole(finalDeviceId, message, secret_key);
     
-    // Create chat message
-    const id = uuidv4();
+    // Validate reply_to_id if provided
+    if (reply_to_id) {
+      const parentExists = await client.query(
+        'SELECT id FROM chat_messages WHERE id = $1',
+        [reply_to_id]
+      );
+      
+      if (parentExists.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid reply_to_id - parent message not found'
+        });
+      }
+    }
+    
+    const messageId = uuidv4();
     const timestamp = new Date();
     
-    // Insert into PostgreSQL
-    const query = `
-      INSERT INTO chat_messages (id, username, message, role, device_id, timestamp)
-      VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *;
-    `;
+    await client.query(
+      `INSERT INTO chat_messages (id, username, message, role, device_id, reply_to_id, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [messageId, username, message, role, finalDeviceId, reply_to_id || null, timestamp]
+    );
     
-    const values = [
-      id,
-      username.trim(),
-      message.trim(),
-      role,
-      final_device_id,
-      timestamp
-    ];
-    
-    const result = await client.query(query, values);
-    const chatMessage = result.rows[0];
-    
-    // Premium Console Logging
-    const roleIcon = role === '★ OWNER' ? '👑' : '💬';
-    console.log(`${roleIcon} NEW CHAT MESSAGE SAVED TO DATABASE`);
-    console.log(`   User: ${chatMessage.username}`);
-    console.log(`   Role: ${chatMessage.role}`);
-    console.log(`   Device: ${chatMessage.device_id}`);
-    console.log(`   Message: ${chatMessage.message}`);
-    console.log(`   Time: ${formatTimestamp(chatMessage.timestamp)}`);
+    // Fetch the complete message with parent data if it's a reply
+    let chatMessage;
+    if (reply_to_id) {
+      const result = await client.query(
+        `SELECT 
+          m.*,
+          parent.username as parent_username,
+          parent.message as parent_message
+         FROM chat_messages m
+         LEFT JOIN chat_messages parent ON m.reply_to_id = parent.id
+         WHERE m.id = $1`,
+        [messageId]
+      );
+      chatMessage = result.rows[0];
+      
+      console.log(`\n════════════════════════════════════════════════════════════════`);
+      console.log(`↩️  💬 NEW CHAT MESSAGE SAVED TO DATABASE`);
+      console.log(`   User: ${username}`);
+      console.log(`   Role: ${role}`);
+      console.log(`   Device: ${finalDeviceId || 'Not provided'}`);
+      console.log(`   ↩️  Reply to: ${chatMessage.parent_username}`);
+      console.log(`   Message: ${message}`);
+      console.log(`════════════════════════════════════════════════════════════════\n`);
+    } else {
+      chatMessage = (await client.query(
+        'SELECT * FROM chat_messages WHERE id = $1',
+        [messageId]
+      )).rows[0];
+      
+      const ownerBadge = role === '★ OWNER' ? '👑 ' : '';
+      console.log(`\n════════════════════════════════════════════════════════════════`);
+      console.log(`${ownerBadge}💬 NEW CHAT MESSAGE SAVED TO DATABASE`);
+      console.log(`   User: ${username}`);
+      console.log(`   Role: ${role}`);
+      console.log(`   Device: ${finalDeviceId || 'Not provided'}`);
+      console.log(`   Message: ${message}`);
+      console.log(`════════════════════════════════════════════════════════════════\n`);
+    }
     
     res.status(201).json({
       success: true,
-      message: '✅ Message sent successfully',
+      message: 'Chat message sent',
       data: {
         id: chatMessage.id,
         username: chatMessage.username,
         message: chatMessage.message,
         role: chatMessage.role,
         device_id: chatMessage.device_id,
-        deviceId: chatMessage.device_id, // Return both formats for compatibility
+        deviceId: chatMessage.device_id,
+        reply_to_id: chatMessage.reply_to_id,
         timestamp: formatTimestamp(chatMessage.timestamp),
         isOwner: chatMessage.role === '★ OWNER'
       }
@@ -534,36 +1048,64 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
 });
 
 /**
- * GET /api/chat - Fetch last 50 chat messages from PostgreSQL
- * 
- * Query Parameters:
- * - limit (optional): Number of messages to fetch (max 50)
+ * GET /api/chat - Fetch Chat Messages with Threaded Conversations
+ * Enhanced: SQL JOIN to return parent message data for replies
  */
 app.get('/api/chat', validateApiKey, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 50);
     
-    // Query last N messages, ordered by timestamp descending
+    // Query messages with parent message data (for replies)
     const query = `
-      SELECT id, username, message, role, device_id, timestamp, created_at
-      FROM chat_messages
-      ORDER BY timestamp DESC
+      SELECT 
+        m.id,
+        m.sender_id,
+        m.username,
+        m.message,
+        m.role,
+        m.device_id,
+        m.reply_to_id,
+        m.timestamp,
+        m.created_at,
+        parent.id as parent_id,
+        parent.username as parent_username,
+        parent.message as parent_message,
+        parent.role as parent_role
+      FROM chat_messages m
+      LEFT JOIN chat_messages parent ON m.reply_to_id = parent.id
+      ORDER BY m.timestamp DESC
       LIMIT $1;
     `;
     
     const result = await pool.query(query, [limit]);
     
-    // Messages are already in DESC order, but we might want to reverse for display
-    const messages = result.rows.map(row => ({
-      id: row.id,
-      username: row.username,
-      message: row.message,
-      role: row.role,
-      device_id: row.device_id,
-      deviceId: row.device_id, // Return both formats for compatibility
-      timestamp: formatTimestamp(row.timestamp),
-      isOwner: row.role === '★ OWNER'
-    }));
+    // Map messages with parent data
+    const messages = result.rows.map(row => {
+      const messageData = {
+        id: row.id,
+        sender_id: row.sender_id,
+        username: row.username,
+        message: row.message,
+        role: row.role,
+        device_id: row.device_id,
+        deviceId: row.device_id,
+        reply_to_id: row.reply_to_id,
+        timestamp: formatTimestamp(row.timestamp),
+        isOwner: row.role === '★ OWNER'
+      };
+      
+      // Add parent message data if this is a reply
+      if (row.reply_to_id && row.parent_id) {
+        messageData.replying_to = {
+          id: row.parent_id,
+          username: row.parent_username,
+          message: row.parent_message,
+          role: row.parent_role
+        };
+      }
+      
+      return messageData;
+    });
     
     // Get total message count
     const countResult = await pool.query('SELECT COUNT(*) FROM chat_messages');
@@ -587,7 +1129,7 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
 });
 
 /**
- * DELETE /api/chat - Clear all chat messages from database (Admin only)
+ * DELETE /api/chat - Clear All Chat Messages (Admin Only)
  */
 app.delete('/api/chat', validateApiKey, async (req, res) => {
   const client = await pool.connect();
@@ -610,7 +1152,10 @@ app.delete('/api/chat', validateApiKey, async (req, res) => {
     // Delete all messages
     await client.query('DELETE FROM chat_messages');
     
-    console.log(`🗑️  CHAT CLEARED FROM DATABASE - ${previousCount} messages deleted`);
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`🗑️  CHAT CLEARED FROM DATABASE`);
+    console.log(`   Messages Deleted: ${previousCount}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
     
     res.json({
       success: true,
@@ -631,7 +1176,7 @@ app.delete('/api/chat', validateApiKey, async (req, res) => {
 });
 
 /**
- * GET /api/chat/stats - Get chat statistics (optional bonus endpoint)
+ * GET /api/chat/stats - Get Chat Statistics
  */
 app.get('/api/chat/stats', validateApiKey, async (req, res) => {
   try {
@@ -641,6 +1186,7 @@ app.get('/api/chat/stats', validateApiKey, async (req, res) => {
         COUNT(DISTINCT username) as unique_users,
         COUNT(CASE WHEN role = '★ OWNER' THEN 1 END) as owner_messages,
         COUNT(CASE WHEN role = 'User' THEN 1 END) as user_messages,
+        COUNT(CASE WHEN reply_to_id IS NOT NULL THEN 1 END) as reply_messages,
         MAX(timestamp) as last_message_time,
         MIN(timestamp) as first_message_time
       FROM chat_messages;
@@ -656,6 +1202,7 @@ app.get('/api/chat/stats', validateApiKey, async (req, res) => {
         uniqueUsers: parseInt(stats.unique_users),
         ownerMessages: parseInt(stats.owner_messages),
         userMessages: parseInt(stats.user_messages),
+        replyMessages: parseInt(stats.reply_messages),
         lastMessageTime: stats.last_message_time,
         firstMessageTime: stats.first_message_time
       }
@@ -670,9 +1217,106 @@ app.get('/api/chat/stats', validateApiKey, async (req, res) => {
   }
 });
 
-// ============================================================================
+// ────────────────────────────────────────────────────────────────────────────
+// SMS LOGGING
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/sms - Receive and Log Incoming SMS
+ */
+app.post('/api/sms', validateApiKey, async (req, res) => {
+  try {
+    const { sender, message, device_id, deviceId, timestamp } = req.body;
+    
+    // Support both device_id and deviceId
+    const finalDeviceId = device_id || deviceId;
+    
+    if (!sender || !message || !finalDeviceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields',
+        required: ['sender', 'message', 'device_id']
+      });
+    }
+    
+    const smsId = uuidv4();
+    const smsTimestamp = timestamp ? new Date(timestamp) : new Date();
+    
+    await pool.query(
+      `INSERT INTO sms_logs (id, sender, message, device_id, timestamp)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [smsId, sender, message, finalDeviceId, smsTimestamp]
+    );
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`📨 NEW SMS LOGGED TO DATABASE`);
+    console.log(`   From: ${sender}`);
+    console.log(`   Device: ${finalDeviceId}`);
+    console.log(`   Message: ${message}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.status(201).json({
+      success: true,
+      message: 'SMS logged successfully',
+      data: {
+        id: smsId,
+        sender,
+        message,
+        device_id: finalDeviceId,
+        timestamp: formatTimestamp(smsTimestamp)
+      }
+    });
+    
+  } catch (error) {
+    console.error('❌ SMS Logging Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to log SMS',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/sms - Fetch SMS Logs
+ */
+app.get('/api/sms', validateApiKey, async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    
+    const result = await pool.query(
+      'SELECT * FROM sms_logs ORDER BY timestamp DESC LIMIT $1',
+      [limit]
+    );
+    
+    const smsLogs = result.rows.map(log => ({
+      id: log.id,
+      sender: log.sender,
+      message: log.message,
+      device_id: log.device_id,
+      deviceId: log.device_id,
+      timestamp: formatTimestamp(log.timestamp)
+    }));
+    
+    res.json({
+      success: true,
+      count: smsLogs.length,
+      data: smsLogs
+    });
+    
+  } catch (error) {
+    console.error('❌ SMS Fetch Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch SMS logs',
+      message: error.message
+    });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
 // ERROR HANDLING
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 /**
  * 404 Handler
@@ -691,7 +1335,9 @@ app.use((req, res) => {
  * Global Error Handler
  */
 app.use((error, req, res, next) => {
+  console.error('\n════════════════════════════════════════════════════════════════');
   console.error('💥 UNHANDLED ERROR:', error);
+  console.error('════════════════════════════════════════════════════════════════\n');
   
   res.status(error.status || 500).json({
     success: false,
@@ -700,9 +1346,9 @@ app.use((error, req, res, next) => {
   });
 });
 
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 // SERVER STARTUP
-// ============================================================================
+// ════════════════════════════════════════════════════════════════════════════
 
 /**
  * Start the server
@@ -715,18 +1361,26 @@ const startServer = async () => {
     // Start listening
     app.listen(PORT, () => {
       console.log('\n');
-      console.log('═══════════════════════════════════════════════════');
-      console.log('⚡ AURA GATEWAY - Premium Backend Server v2.0');
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log('⚡ AURA GATEWAY - Premium Backend Server v3.5');
       console.log('🎨 Lynx Aesthetic | Dark Theme Compatible');
       console.log('🗄️  PostgreSQL Database Enabled');
-      console.log('═══════════════════════════════════════════════════');
+      console.log('════════════════════════════════════════════════════════════════');
       console.log(`📡 Server: http://localhost:${PORT}`);
       console.log(`🌍 Environment: ${NODE_ENV}`);
       console.log(`🔒 API Key: ${API_KEY.substring(0, 10)}...`);
-      console.log(`👑 Admin Device: ${ADMIN_DEVICE_ID}`);
+      console.log(`👑 Admin Device: ${ADMIN_DEVICE_ID} (HARDCODED)`);
+      console.log(`⭐ Owner Badge: ${SECRET_OWNER_KEY}`);
       console.log(`💾 Database: PostgreSQL (Railway)`);
       console.log(`⏰ Started: ${new Date().toISOString()}`);
-      console.log('═══════════════════════════════════════════════════');
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log('✅ Enhanced Features Active:');
+      console.log('   - Bangladeshi Phone Validation (11 digits, starts with 01)');
+      console.log('   - OTP Cooldown (3 requests per 15 minutes)');
+      console.log('   - Device Health Monitoring');
+      console.log('   - Smart SMS Queue (FIFO - Oldest First)');
+      console.log('   - Threaded Chat Conversations');
+      console.log('════════════════════════════════════════════════════════════════');
       console.log('✅ Server is running with persistent storage');
       console.log('\n');
     });
@@ -738,13 +1392,17 @@ const startServer = async () => {
 
 // Handle graceful shutdown
 process.on('SIGTERM', async () => {
+  console.log('\n════════════════════════════════════════════════════════════════');
   console.log('⚠️  SIGTERM signal received: closing server gracefully');
+  console.log('════════════════════════════════════════════════════════════════\n');
   await pool.end();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
+  console.log('\n════════════════════════════════════════════════════════════════');
   console.log('⚠️  SIGINT signal received: closing server gracefully');
+  console.log('════════════════════════════════════════════════════════════════\n');
   await pool.end();
   process.exit(0);
 });
