@@ -757,6 +757,61 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/users - Fetch all registered users
+ * Returns list of users with their details (excluding sensitive data like OTP codes)
+ */
+app.get('/api/users', validateApiKey, async (req, res) => {
+  try {
+    // Query all users, excluding OTP codes for security
+    const result = await pool.query(`
+      SELECT 
+        id,
+        username,
+        phone,
+        payment_number,
+        provider,
+        is_verified,
+        device_id,
+        created_at
+      FROM users
+      ORDER BY created_at DESC
+    `);
+    
+    const users = result.rows;
+    
+    console.log(`\n════════════════════════════════════════════════════════════════`);
+    console.log(`👥 USER LIST RETRIEVED`);
+    console.log(`   Total Users: ${users.length}`);
+    console.log(`   Verified: ${users.filter(u => u.is_verified).length}`);
+    console.log(`   Unverified: ${users.filter(u => !u.is_verified).length}`);
+    console.log(`════════════════════════════════════════════════════════════════\n`);
+    
+    res.json({
+      success: true,
+      count: users.length,
+      users: users.map(user => ({
+        id: user.id,
+        username: user.username,
+        phone: user.phone,
+        payment_number: user.payment_number,
+        provider: user.provider,
+        is_verified: user.is_verified,
+        device_id: user.device_id,
+        created_at: formatTimestamp(user.created_at)
+      }))
+    });
+    
+  } catch (error) {
+    console.error('❌ User List Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch users',
+      message: error.message
+    });
+  }
+});
+
 // ────────────────────────────────────────────────────────────────────────────
 // DEVICE HEALTH MONITORING (NEW)
 // ────────────────────────────────────────────────────────────────────────────
