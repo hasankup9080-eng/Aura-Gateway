@@ -4,6 +4,7 @@
  * Production-Ready for Railway Deployment
  * 
  * Enhanced Features:
+ * - Auto-Migration for Database Schema Updates
  * - Device Health Monitoring
  * - Bangladeshi Phone Validation
  * - OTP Cooldown Protection
@@ -74,13 +75,18 @@ pool.on('error', (err) => {
 
 /**
  * Create database tables if they don't exist
- * Auto-initializes on server startup
+ * Auto-migrates existing tables with new columns
+ * Crash-proof with individual try-catch blocks
  */
 const initializeDatabase = async () => {
   try {
     console.log('\n════════════════════════════════════════════════════════════════');
     console.log('📊 Initializing database schema...');
     console.log('════════════════════════════════════════════════════════════════\n');
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 1: CREATE TABLES IF NOT EXISTS
+    // ─────────────────────────────────────────────────────────────────────
 
     // Create SMS Logs Table
     await pool.query(`
@@ -102,7 +108,7 @@ const initializeDatabase = async () => {
         username VARCHAR(255) NOT NULL UNIQUE,
         phone VARCHAR(20) NOT NULL,
         payment_number VARCHAR(20) NOT NULL,
-        provider VARCHAR(50) NOT NULL CHECK (provider IN ('bKash', 'Nagad', 'Rocket')),
+        provider VARCHAR(50) NOT NULL,
         otp_code VARCHAR(6),
         is_verified BOOLEAN DEFAULT FALSE,
         device_id VARCHAR(255),
@@ -117,19 +123,19 @@ const initializeDatabase = async () => {
         id UUID PRIMARY KEY,
         recipient_number VARCHAR(20) NOT NULL,
         message_text TEXT NOT NULL,
-        status VARCHAR(50) DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed')),
+        status VARCHAR(50) DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT NOW(),
         sent_at TIMESTAMP
       );
     `);
     console.log('✅ Table "outgoing_sms" ready (Android SMS Gateway)');
 
-    // Create Device Status Table (NEW - Device Health Monitoring)
+    // Create Device Status Table (Device Health Monitoring)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS device_status (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         device_id VARCHAR(255) NOT NULL UNIQUE,
-        battery_level INTEGER CHECK (battery_level >= 0 AND battery_level <= 100),
+        battery_level INTEGER,
         is_charging BOOLEAN DEFAULT FALSE,
         last_updated TIMESTAMP DEFAULT NOW()
       );
@@ -145,15 +151,13 @@ const initializeDatabase = async () => {
         message TEXT NOT NULL,
         role VARCHAR(50) NOT NULL DEFAULT 'User',
         device_id VARCHAR(255),
-        reply_to_id UUID,
         timestamp TIMESTAMP NOT NULL DEFAULT NOW(),
-        created_at TIMESTAMP DEFAULT NOW(),
-        FOREIGN KEY (reply_to_id) REFERENCES chat_messages(id) ON DELETE SET NULL
+        created_at TIMESTAMP DEFAULT NOW()
       );
     `);
-    console.log('✅ Table "chat_messages" ready with threaded reply support');
+    console.log('✅ Table "chat_messages" ready');
 
-    // Create OTP Request Tracking Table (NEW - For Cooldown)
+    // Create OTP Request Tracking Table (For Cooldown)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS otp_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -163,35 +167,177 @@ const initializeDatabase = async () => {
     `);
     console.log('✅ Table "otp_requests" ready (OTP Cooldown Tracking)');
 
-    // Create indexes for better performance
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_sms_timestamp ON sms_logs(timestamp DESC);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat_messages(timestamp DESC);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages(reply_to_id);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_outgoing_sms_status ON outgoing_sms(status, created_at);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_device_status_device ON device_status(device_id);
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_otp_requests_phone ON otp_requests(phone_number, requested_at);
-    `);
-    console.log('✅ Database indexes created');
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 2: AUTO-MIGRATION - ADD MISSING COLUMNS TO EXISTING TABLES
+    // ─────────────────────────────────────────────────────────────────────
+
+    console.log('\n📦 Running auto-migration for schema updates...\n');
+
+    // Migration 1: Add reply_to_id to chat_messages (CRITICAL FIX)
+    try {
+      await pool.query(`
+        ALTER TABLE chat_messages 
+        ADD COLUMN IF NOT EXISTS reply_to_id UUID;
+      `);
+      console.log('✅ Migration: chat_messages.reply_to_id added/verified');
+    } catch (error) {
+      console.log('⚠️  Migration: chat_messages.reply_to_id already exists or error:', error.message);
+    }
+
+    // Migration 2: Add foreign key constraint for reply_to_id (if not exists)
+    try {
+      await pool.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'chat_messages_reply_to_id_fkey'
+          ) THEN
+            ALTER TABLE chat_messages 
+            ADD CONSTRAINT chat_messages_reply_to_id_fkey 
+            FOREIGN KEY (reply_to_id) REFERENCES chat_messages(id) ON DELETE SET NULL;
+          END IF;
+        END $$;
+      `);
+      console.log('✅ Migration: reply_to_id foreign key constraint verified');
+    } catch (error) {
+      console.log('⚠️  Migration: Foreign key constraint already exists or error:', error.message);
+    }
+
+    // Migration 3: Add sender_id to chat_messages if missing
+    try {
+      await pool.query(`
+        ALTER TABLE chat_messages 
+        ADD COLUMN IF NOT EXISTS sender_id VARCHAR(255);
+      `);
+      console.log('✅ Migration: chat_messages.sender_id added/verified');
+    } catch (error) {
+      console.log('⚠️  Migration: chat_messages.sender_id already exists or error:', error.message);
+    }
+
+    // Migration 4: Add CHECK constraint to users.provider if missing
+    try {
+      await pool.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'users_provider_check'
+          ) THEN
+            ALTER TABLE users 
+            ADD CONSTRAINT users_provider_check 
+            CHECK (provider IN ('bKash', 'Nagad', 'Rocket'));
+          END IF;
+        END $$;
+      `);
+      console.log('✅ Migration: users.provider CHECK constraint verified');
+    } catch (error) {
+      console.log('⚠️  Migration: users.provider CHECK already exists or error:', error.message);
+    }
+
+    // Migration 5: Add CHECK constraint to outgoing_sms.status if missing
+    try {
+      await pool.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'outgoing_sms_status_check'
+          ) THEN
+            ALTER TABLE outgoing_sms 
+            ADD CONSTRAINT outgoing_sms_status_check 
+            CHECK (status IN ('pending', 'sent', 'failed'));
+          END IF;
+        END $$;
+      `);
+      console.log('✅ Migration: outgoing_sms.status CHECK constraint verified');
+    } catch (error) {
+      console.log('⚠️  Migration: outgoing_sms.status CHECK already exists or error:', error.message);
+    }
+
+    // Migration 6: Add CHECK constraint to device_status.battery_level if missing
+    try {
+      await pool.query(`
+        DO $$ 
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint 
+            WHERE conname = 'device_status_battery_level_check'
+          ) THEN
+            ALTER TABLE device_status 
+            ADD CONSTRAINT device_status_battery_level_check 
+            CHECK (battery_level >= 0 AND battery_level <= 100);
+          END IF;
+        END $$;
+      `);
+      console.log('✅ Migration: device_status.battery_level CHECK constraint verified');
+    } catch (error) {
+      console.log('⚠️  Migration: device_status.battery_level CHECK already exists or error:', error.message);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // STEP 3: CREATE INDEXES FOR PERFORMANCE
+    // ─────────────────────────────────────────────────────────────────────
+
+    console.log('\n🔍 Creating performance indexes...\n');
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_sms_timestamp ON sms_logs(timestamp DESC);`);
+      console.log('✅ Index: sms_logs(timestamp)');
+    } catch (error) {
+      console.log('⚠️  Index: sms_logs(timestamp) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_timestamp ON chat_messages(timestamp DESC);`);
+      console.log('✅ Index: chat_messages(timestamp)');
+    } catch (error) {
+      console.log('⚠️  Index: chat_messages(timestamp) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_reply ON chat_messages(reply_to_id);`);
+      console.log('✅ Index: chat_messages(reply_to_id)');
+    } catch (error) {
+      console.log('⚠️  Index: chat_messages(reply_to_id) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_outgoing_sms_status ON outgoing_sms(status, created_at);`);
+      console.log('✅ Index: outgoing_sms(status, created_at)');
+    } catch (error) {
+      console.log('⚠️  Index: outgoing_sms(status, created_at) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_phone ON users(phone);`);
+      console.log('✅ Index: users(phone)');
+    } catch (error) {
+      console.log('⚠️  Index: users(phone) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_device_status_device ON device_status(device_id);`);
+      console.log('✅ Index: device_status(device_id)');
+    } catch (error) {
+      console.log('⚠️  Index: device_status(device_id) error:', error.message);
+    }
+
+    try {
+      await pool.query(`CREATE INDEX IF NOT EXISTS idx_otp_requests_phone ON otp_requests(phone_number, requested_at);`);
+      console.log('✅ Index: otp_requests(phone_number, requested_at)');
+    } catch (error) {
+      console.log('⚠️  Index: otp_requests(phone_number, requested_at) error:', error.message);
+    }
 
     console.log('\n════════════════════════════════════════════════════════════════');
-    console.log('🎉 Database initialization complete!');
+    console.log('🎉 Database initialization & migration complete!');
     console.log('════════════════════════════════════════════════════════════════\n');
+    
   } catch (error) {
+    console.error('\n════════════════════════════════════════════════════════════════');
     console.error('❌ Database initialization failed:', error);
+    console.error('════════════════════════════════════════════════════════════════\n');
     throw error;
   }
 };
@@ -228,8 +374,6 @@ const validateApiKey = (req, res, next) => {
 /**
  * Validate Bangladeshi Phone Number
  * Must be 11 digits starting with 01
- * @param {string} phone - Phone number to validate
- * @returns {boolean} - True if valid
  */
 const validateBangladeshiPhone = (phone) => {
   const regex = /^01[0-9]{9}$/;
@@ -238,7 +382,6 @@ const validateBangladeshiPhone = (phone) => {
 
 /**
  * Generate 6-digit OTP
- * @returns {string} - 6-digit OTP code
  */
 const generateOTP = () => {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -247,8 +390,6 @@ const generateOTP = () => {
 /**
  * Check OTP Request Cooldown
  * Prevents more than 3 requests in 15 minutes
- * @param {string} phone - Phone number to check
- * @returns {Promise<boolean>} - True if cooldown active, false if allowed
  */
 const checkOTPCooldown = async (phone) => {
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
@@ -267,7 +408,6 @@ const checkOTPCooldown = async (phone) => {
 
 /**
  * Log OTP Request
- * @param {string} phone - Phone number
  */
 const logOTPRequest = async (phone) => {
   await pool.query(
@@ -278,23 +418,16 @@ const logOTPRequest = async (phone) => {
 
 /**
  * Detect if user is an OWNER
- * @param {string} deviceId - Device ID from request
- * @param {string} message - Message content
- * @param {string} secretKey - Optional secret key
- * @returns {string} - 'User' or '★ OWNER'
  */
 const detectOwnerRole = (deviceId, message, secretKey) => {
-  // Check if device ID matches admin device (HARDCODED)
   if (deviceId === ADMIN_DEVICE_ID) {
     return '★ OWNER';
   }
   
-  // Check if secret key is provided
   if (secretKey && secretKey === SECRET_OWNER_KEY) {
     return '★ OWNER';
   }
   
-  // Check if message contains secret owner key
   if (message && message.includes(SECRET_OWNER_KEY)) {
     return '★ OWNER';
   }
@@ -304,8 +437,6 @@ const detectOwnerRole = (deviceId, message, secretKey) => {
 
 /**
  * Format timestamp for Lynx aesthetic
- * @param {Date} date - Date object
- * @returns {string} - Formatted timestamp
  */
 const formatTimestamp = (date) => {
   return date.toISOString();
@@ -319,9 +450,6 @@ const formatTimestamp = (date) => {
 // ROOT & HEALTH CHECK
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * Root endpoint - API Information
- */
 app.get('/', (req, res) => {
   res.json({
     success: true,
@@ -331,6 +459,7 @@ app.get('/', (req, res) => {
     theme: 'Lynx Premium',
     status: 'operational',
     features: {
+      auto_migration: true,
       payment_verification: true,
       otp_system: true,
       otp_cooldown: true,
@@ -339,31 +468,6 @@ app.get('/', (req, res) => {
       device_health: true,
       bangladeshi_validation: true
     },
-    endpoints: {
-      // Authentication
-      login: 'POST /api/login - Authenticate and get API key',
-      
-      // User Management
-      signup: 'POST /api/signup - Register with payment verification & OTP cooldown',
-      verifyOtp: 'POST /api/verify-otp - Verify OTP code',
-      
-      // SMS Gateway (Android App)
-      pendingSms: 'GET /api/pending-sms - Get oldest pending SMS',
-      smsSent: 'POST /api/sms-sent - Mark SMS as sent',
-      
-      // Device Health
-      deviceHealth: 'POST /api/device-health - Update device status (battery, charging)',
-      
-      // Chat System
-      chatSend: 'POST /api/chat - Send chat message (with reply support)',
-      chatFetch: 'GET /api/chat - Fetch messages (threaded with parent data)',
-      
-      // SMS Logging
-      sms: 'POST /api/sms - Receive and log SMS data',
-      
-      // System
-      health: 'GET /health - Server health check'
-    },
     admin: {
       deviceId: ADMIN_DEVICE_ID,
       ownerBadge: '★ OWNER'
@@ -371,12 +475,8 @@ app.get('/', (req, res) => {
   });
 });
 
-/**
- * Health Check Endpoint
- */
 app.get('/health', async (req, res) => {
   try {
-    // Test database connection
     await pool.query('SELECT NOW()');
     
     res.json({
@@ -396,18 +496,12 @@ app.get('/health', async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// AUTHENTICATION
+// AUTHENTICATION (SIGNUP & OTP)
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * POST /api/login - Admin Login
- * Returns API key for authenticated users
- */
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password, device_id, deviceId } = req.body;
-    
-    // Support both device_id and deviceId
     const finalDeviceId = device_id || deviceId;
     
     if (!username || !password || !finalDeviceId) {
@@ -418,7 +512,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Check if admin credentials
     if (password === ADMIN_PASSWORD) {
       console.log(`\n════════════════════════════════════════════════════════════════`);
       console.log(`✅ ADMIN LOGIN SUCCESSFUL`);
@@ -435,7 +528,6 @@ app.post('/api/login', async (req, res) => {
       });
     }
     
-    // Check database for regular users
     const userResult = await pool.query(
       'SELECT * FROM users WHERE username = $1 AND is_verified = true',
       [username]
@@ -479,23 +571,12 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// USER MANAGEMENT WITH ENHANCED VALIDATION
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * POST /api/signup - User Registration with Payment Verification
- * Enhanced with:
- * - Bangladeshi phone validation (11 digits starting with 01)
- * - OTP cooldown (max 3 requests per number in 15 minutes)
- */
 app.post('/api/signup', async (req, res) => {
   const client = await pool.connect();
   
   try {
     const { username, phone, payment_number, provider } = req.body;
     
-    // Validation
     if (!username || !phone || !payment_number || !provider) {
       return res.status(400).json({
         success: false,
@@ -504,7 +585,6 @@ app.post('/api/signup', async (req, res) => {
       });
     }
     
-    // Validate Bangladeshi phone numbers
     if (!validateBangladeshiPhone(phone)) {
       console.log(`\n⚠️  INVALID PHONE FORMAT`);
       console.log(`   Phone: ${phone}`);
@@ -529,7 +609,6 @@ app.post('/api/signup', async (req, res) => {
       });
     }
     
-    // Validate provider
     if (!['bKash', 'Nagad', 'Rocket'].includes(provider)) {
       return res.status(400).json({
         success: false,
@@ -538,7 +617,6 @@ app.post('/api/signup', async (req, res) => {
       });
     }
     
-    // Check OTP cooldown
     const isCooldownActive = await checkOTPCooldown(phone);
     if (isCooldownActive) {
       console.log(`\n🚫 OTP COOLDOWN ACTIVE`);
@@ -555,7 +633,6 @@ app.post('/api/signup', async (req, res) => {
     
     await client.query('BEGIN');
     
-    // Check if username already exists
     const existingUser = await client.query(
       'SELECT id FROM users WHERE username = $1',
       [username]
@@ -569,18 +646,15 @@ app.post('/api/signup', async (req, res) => {
       });
     }
     
-    // Generate OTP
     const otpCode = generateOTP();
     const userId = uuidv4();
     
-    // Insert user
     await client.query(
       `INSERT INTO users (id, username, phone, payment_number, provider, otp_code, is_verified)
        VALUES ($1, $2, $3, $4, $5, $6, false)`,
       [userId, username, phone, payment_number, provider, otpCode]
     );
     
-    // Queue OTP SMS
     const smsId = uuidv4();
     const smsMessage = `Your Aura Gateway OTP is: ${otpCode}. Valid for 15 minutes.`;
     
@@ -590,7 +664,6 @@ app.post('/api/signup', async (req, res) => {
       [smsId, phone, smsMessage]
     );
     
-    // Log OTP request for cooldown tracking
     await logOTPRequest(phone);
     
     await client.query('COMMIT');
@@ -628,9 +701,6 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-/**
- * POST /api/verify-otp - Verify OTP Code
- */
 app.post('/api/verify-otp', async (req, res) => {
   try {
     const { username, otp_code } = req.body;
@@ -643,7 +713,6 @@ app.post('/api/verify-otp', async (req, res) => {
       });
     }
     
-    // Find user and verify OTP
     const result = await pool.query(
       `UPDATE users 
        SET is_verified = true, otp_code = NULL
@@ -692,16 +761,10 @@ app.post('/api/verify-otp', async (req, res) => {
 // DEVICE HEALTH MONITORING (NEW)
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * POST /api/device-health - Update Device Status
- * Uses UPSERT logic (INSERT ... ON CONFLICT UPDATE)
- * Hardcoded for REAL-MENA-RZO5-0177
- */
 app.post('/api/device-health', validateApiKey, async (req, res) => {
   try {
     const { battery_level, is_charging } = req.body;
     
-    // Validation
     if (battery_level === undefined || is_charging === undefined) {
       return res.status(400).json({
         success: false,
@@ -717,7 +780,6 @@ app.post('/api/device-health', validateApiKey, async (req, res) => {
       });
     }
     
-    // UPSERT operation for ADMIN_DEVICE_ID (HARDCODED)
     const result = await pool.query(
       `INSERT INTO device_status (device_id, battery_level, is_charging, last_updated)
        VALUES ($1, $2, $3, NOW())
@@ -762,9 +824,6 @@ app.post('/api/device-health', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * GET /api/device-health - Get Current Device Status
- */
 app.get('/api/device-health', validateApiKey, async (req, res) => {
   try {
     const result = await pool.query(
@@ -780,17 +839,9 @@ app.get('/api/device-health', validateApiKey, async (req, res) => {
       });
     }
     
-    const deviceStatus = result.rows[0];
-    
     res.json({
       success: true,
-      device: {
-        id: deviceStatus.id,
-        device_id: deviceStatus.device_id,
-        battery_level: deviceStatus.battery_level,
-        is_charging: deviceStatus.is_charging,
-        last_updated: deviceStatus.last_updated
-      }
+      device: result.rows[0]
     });
     
   } catch (error) {
@@ -807,13 +858,8 @@ app.get('/api/device-health', validateApiKey, async (req, res) => {
 // SMS GATEWAY (ANDROID APP INTEGRATION)
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * GET /api/pending-sms - Fetch OLDEST Pending SMS for Android App
- * Enhanced: Returns oldest SMS first for FIFO processing
- */
 app.get('/api/pending-sms', validateApiKey, async (req, res) => {
   try {
-    // Fetch the oldest pending SMS (FIFO - First In, First Out)
     const result = await pool.query(
       `SELECT * FROM outgoing_sms 
        WHERE status = 'pending' 
@@ -860,9 +906,6 @@ app.get('/api/pending-sms', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * POST /api/sms-sent - Android App Reports SMS Sent
- */
 app.post('/api/sms-sent', validateApiKey, async (req, res) => {
   try {
     const { sms_id, status } = req.body;
@@ -930,19 +973,14 @@ app.post('/api/sms-sent', validateApiKey, async (req, res) => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// CHAT SYSTEM WITH THREADED CONVERSATIONS
+// GLOBAL CHAT (THREADED)
 // ────────────────────────────────────────────────────────────────────────────
 
-/**
- * POST /api/chat - Send Chat Message with Reply Support
- */
 app.post('/api/chat', validateApiKey, async (req, res) => {
   const client = await pool.connect();
   
   try {
     const { username, message, device_id, deviceId, reply_to_id, secret_key } = req.body;
-    
-    // Support both device_id and deviceId
     const finalDeviceId = device_id || deviceId;
     
     if (!username || !message) {
@@ -953,10 +991,8 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
       });
     }
     
-    // Detect owner role
     const role = detectOwnerRole(finalDeviceId, message, secret_key);
     
-    // Validate reply_to_id if provided
     if (reply_to_id) {
       const parentExists = await client.query(
         'SELECT id FROM chat_messages WHERE id = $1',
@@ -980,7 +1016,6 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
       [messageId, username, message, role, finalDeviceId, reply_to_id || null, timestamp]
     );
     
-    // Fetch the complete message with parent data if it's a reply
     let chatMessage;
     if (reply_to_id) {
       const result = await client.query(
@@ -1047,15 +1082,10 @@ app.post('/api/chat', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * GET /api/chat - Fetch Chat Messages with Threaded Conversations
- * Enhanced: SQL JOIN to return parent message data for replies
- */
 app.get('/api/chat', validateApiKey, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 50);
     
-    // Query messages with parent message data (for replies)
     const query = `
       SELECT 
         m.id,
@@ -1079,7 +1109,6 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
     
     const result = await pool.query(query, [limit]);
     
-    // Map messages with parent data
     const messages = result.rows.map(row => {
       const messageData = {
         id: row.id,
@@ -1094,7 +1123,6 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
         isOwner: row.role === '★ OWNER'
       };
       
-      // Add parent message data if this is a reply
       if (row.reply_to_id && row.parent_id) {
         messageData.replying_to = {
           id: row.parent_id,
@@ -1107,7 +1135,6 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
       return messageData;
     });
     
-    // Get total message count
     const countResult = await pool.query('SELECT COUNT(*) FROM chat_messages');
     const totalCount = parseInt(countResult.rows[0].count);
     
@@ -1128,16 +1155,12 @@ app.get('/api/chat', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * DELETE /api/chat - Clear All Chat Messages (Admin Only)
- */
 app.delete('/api/chat', validateApiKey, async (req, res) => {
   const client = await pool.connect();
   
   try {
     const { secret_key } = req.body;
     
-    // Verify admin access
     if (secret_key !== SECRET_OWNER_KEY) {
       return res.status(403).json({
         success: false,
@@ -1145,11 +1168,9 @@ app.delete('/api/chat', validateApiKey, async (req, res) => {
       });
     }
     
-    // Get count before deletion
     const countResult = await pool.query('SELECT COUNT(*) FROM chat_messages');
     const previousCount = parseInt(countResult.rows[0].count);
     
-    // Delete all messages
     await client.query('DELETE FROM chat_messages');
     
     console.log(`\n════════════════════════════════════════════════════════════════`);
@@ -1175,9 +1196,6 @@ app.delete('/api/chat', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * GET /api/chat/stats - Get Chat Statistics
- */
 app.get('/api/chat/stats', validateApiKey, async (req, res) => {
   try {
     const statsQuery = `
@@ -1217,18 +1235,9 @@ app.get('/api/chat/stats', validateApiKey, async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────────────────────────────────
-// SMS LOGGING
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * POST /api/sms - Receive and Log Incoming SMS
- */
 app.post('/api/sms', validateApiKey, async (req, res) => {
   try {
     const { sender, message, device_id, deviceId, timestamp } = req.body;
-    
-    // Support both device_id and deviceId
     const finalDeviceId = device_id || deviceId;
     
     if (!sender || !message || !finalDeviceId) {
@@ -1277,9 +1286,6 @@ app.post('/api/sms', validateApiKey, async (req, res) => {
   }
 });
 
-/**
- * GET /api/sms - Fetch SMS Logs
- */
 app.get('/api/sms', validateApiKey, async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 100);
@@ -1318,9 +1324,6 @@ app.get('/api/sms', validateApiKey, async (req, res) => {
 // ERROR HANDLING
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * 404 Handler
- */
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -1331,9 +1334,6 @@ app.use((req, res) => {
   });
 });
 
-/**
- * Global Error Handler
- */
 app.use((error, req, res, next) => {
   console.error('\n════════════════════════════════════════════════════════════════');
   console.error('💥 UNHANDLED ERROR:', error);
@@ -1350,15 +1350,10 @@ app.use((error, req, res, next) => {
 // SERVER STARTUP
 // ════════════════════════════════════════════════════════════════════════════
 
-/**
- * Start the server
- */
 const startServer = async () => {
   try {
-    // Initialize database schema
     await initializeDatabase();
     
-    // Start listening
     app.listen(PORT, () => {
       console.log('\n');
       console.log('════════════════════════════════════════════════════════════════');
@@ -1375,6 +1370,7 @@ const startServer = async () => {
       console.log(`⏰ Started: ${new Date().toISOString()}`);
       console.log('════════════════════════════════════════════════════════════════');
       console.log('✅ Enhanced Features Active:');
+      console.log('   - Auto-Migration for Schema Updates');
       console.log('   - Bangladeshi Phone Validation (11 digits, starts with 01)');
       console.log('   - OTP Cooldown (3 requests per 15 minutes)');
       console.log('   - Device Health Monitoring');
@@ -1390,7 +1386,6 @@ const startServer = async () => {
   }
 };
 
-// Handle graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('\n════════════════════════════════════════════════════════════════');
   console.log('⚠️  SIGTERM signal received: closing server gracefully');
@@ -1407,8 +1402,6 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-// Start the server
 startServer();
 
-// Export for testing
 module.exports = app;
