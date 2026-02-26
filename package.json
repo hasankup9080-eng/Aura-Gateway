@@ -1,7 +1,7 @@
 {
   "name": "aura-gateway",
-  "version": "5.0.0",
-  "description": "⚡ AURA GATEWAY v5.0 TITANIUM - Production-Ready Android SMS Gateway Backend with Zero Regression",
+  "version": "5.1.0",
+  "description": "⚡ AURA GATEWAY v5.1 TITANIUM - Military-Grade Security with Email OTP & Anti-Spam",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -19,7 +19,11 @@
     "authentication",
     "otp",
     "rate-limiting",
-    "titanium"
+    "anti-spam",
+    "vpn-detection",
+    "email-verification",
+    "titanium",
+    "b2b"
   ],
   "author": "Aura Team",
   "license": "MIT",
@@ -28,7 +32,11 @@
     "pg": "^8.11.3",
     "dotenv": "^16.3.1",
     "cors": "^2.8.5",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "google-libphonenumber": "^3.2.34",
+    "nodemailer": "^6.9.7",
+    "express-rate-limit": "^7.1.5",
+    "axios": "^1.6.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
