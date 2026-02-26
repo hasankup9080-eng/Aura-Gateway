@@ -452,7 +452,7 @@ const initDatabase = async () => {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS otp_requests (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        phone_number VARCHAR(20) NOT NULL,
+        phone VARCHAR(20) NOT NULL,
         requested_at TIMESTAMP DEFAULT NOW()
       );
     `);
@@ -555,7 +555,7 @@ const initDatabase = async () => {
       ['idx_users_phone', 'users', 'phone'],
       ['idx_users_email', 'users', 'email'],
       ['idx_device_status_device', 'device_status', 'device_id'],
-      ['idx_otp_requests', 'otp_requests', 'phone_number, requested_at'],
+      ['idx_otp_requests', 'otp_requests', 'phone, requested_at'],
       ['idx_otp_requests_email', 'otp_requests', 'email, requested_at'],
       ['idx_login_attempts', 'login_attempts', 'identifier, attempted_at'],
       ['idx_users_api_key', 'users', 'api_key'],
@@ -797,7 +797,7 @@ const checkOTPCooldown = async (identifier) => {
   
   const result = await pool.query(
     `SELECT COUNT(*) as count FROM otp_requests 
-     WHERE (phone_number = $1 OR email = $1) AND requested_at > $2`,
+     WHERE (phone = $1 OR email = $1) AND requested_at > $2`,
     [identifier, windowStart]
   );
   
@@ -809,7 +809,7 @@ const checkOTPCooldown = async (identifier) => {
  */
 const logOTPRequest = async (client, phone, email) => {
   await client.query(
-    `INSERT INTO otp_requests (phone_number, email) VALUES ($1, $2)`,
+    `INSERT INTO otp_requests (phone, email) VALUES ($1, $2)`,
     [phone, email]
   );
 };
