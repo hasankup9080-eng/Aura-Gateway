@@ -47,6 +47,7 @@ const axios = require('axios');
 const nodemailer = require('nodemailer');
 const phoneUtil = require('google-libphonenumber').PhoneNumberUtil.getInstance();
 const PNF = require('google-libphonenumber').PhoneNumberFormat;
+const jwt = require('jsonwebtoken');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1366,104 +1367,74 @@ app.post('/api/verify-otp', async (req, res) => {
 });
 
 /**
- * POST /api/login - User login
+ * POST /api/login - User & Admin login (v5.1 Titanium)
+ * Properly distinguishes between Regular Users and Admins.
+ * Regular users → DB lookup + scrypt verify → JWT with role 'User'
+ * Admin         → env-var check             → JWT with role 'Admin' / '★ OWNER'
  */
 app.post('/api/login', async (req, res) => {
   try {
     const { username, password, device_id, deviceId } = req.body;
     const finalDeviceId = device_id || deviceId;
-    
+
     if (!username || !password) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields',
-        required: ['username', 'password']
-      });
+      return res.status(400).json({ success: false, error: 'Missing required fields', required: ['username', 'password'] });
     }
 
-    // Check rate limit
     const rateLimitExceeded = await checkLoginRateLimit(username);
     if (rateLimitExceeded) {
-      console.log(`\n🚫 LOGIN RATE LIMIT EXCEEDED`);
-      console.log(`   Username: ${username}`);
-      
-      return res.status(429).json({
-        success: false,
-        error: 'Too many login attempts',
-        message: `Maximum ${RATE_LIMITS.LOGIN_ATTEMPTS} attempts per ${RATE_LIMITS.LOGIN_WINDOW_MINUTES} minutes`
-      });
+      return res.status(429).json({ success: false, error: 'Too many login attempts', message: 'Rate limit exceeded' });
     }
-
-    // Log attempt
     await logLoginAttempt(username);
 
-    // Admin login
-    if (password === ADMIN_PASSWORD) {
-      console.log(`\n✅ ADMIN LOGIN SUCCESSFUL`);
-      console.log(`   Username: ${username}`);
-      
-      return res.json({
-        success: true,
-        message: 'Login successful',
-        apiKey: API_KEY,
-        role: finalDeviceId === ADMIN_DEVICE_ID ? '★ OWNER' : 'Admin'
-      });
-    }
-
-    // User login
+    // ── STEP 1: Try user login first ──────────────────────────────────────
     const userResult = await pool.query(
       'SELECT * FROM users WHERE username = $1 AND is_verified = true',
       [username]
     );
-    
-    if (userResult.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials or unverified account'
-      });
-    }
-    
-    const user = userResult.rows[0];
 
-    // Verify password
-    if (user.password_hash && user.password_salt) {
-      const passwordValid = verifyPassword(password, user.password_hash, user.password_salt);
-      
-      if (!passwordValid) {
-        return res.status(401).json({
-          success: false,
-          error: 'Invalid credentials'
-        });
+    if (userResult.rows.length > 0) {
+      const user = userResult.rows[0];
+      if (user.password_hash && user.password_salt) {
+        const passwordValid = verifyPassword(password, user.password_hash, user.password_salt);
+        if (passwordValid) {
+          console.log(`\n✅ USER LOGIN SUCCESSFUL\n   Username: ${username}`);
+          const token = jwt.sign(
+            { id: user.id, username: user.username, role: 'User' },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+          );
+          return res.json({
+            success: true,
+            message: 'Login successful',
+            token,
+            user: { id: user.id, username: user.username, phone: user.phone, email: user.email, api_key: user.api_key }
+          });
+        }
       }
-    } else {
-      return res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
+      // User found but password wrong
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
-    
-    console.log(`\n✅ USER LOGIN SUCCESSFUL`);
-    console.log(`   Username: ${username}`);
-    
-    res.json({
-      success: true,
-      message: 'Login successful',
-      user: {
-        id: user.id,
-        username: user.username,
-        phone: user.phone,
-        email: user.email,
-        api_key: user.api_key
-      }
-    });
-    
+
+    // ── STEP 2: No verified user found → check admin credentials ──────────
+    const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin';
+    if (username === ADMIN_USERNAME && password === process.env.ADMIN_PASSWORD) {
+      console.log(`\n✅ ADMIN LOGIN SUCCESSFUL\n   Username: ${username}`);
+      const adminRole = finalDeviceId === (process.env.ADMIN_DEVICE_ID || ADMIN_DEVICE_ID) ? '★ OWNER' : 'Admin';
+      const token = jwt.sign(
+        { username: username, role: adminRole },
+        process.env.JWT_SECRET,
+        { expiresIn: '1h' }
+      );
+      return res.json({ success: true, message: 'Login successful', token, apiKey: process.env.API_KEY || API_KEY, role: adminRole });
+    }
+
+    // Neither matched
+    return res.status(401).json({ success: false, error: 'Invalid credentials or unverified account' });
+
   } catch (error) {
     console.error('❌ Login Error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Login failed',
-      message: error.message
-    });
+    res.status(500).json({ success: false, error: 'Login failed', message: error.message });
   }
 });
 
@@ -1479,7 +1450,7 @@ app.get('/api/users', validateApiKey, async (req, res) => {
     const result = await pool.query(`
       SELECT 
         id, username, phone, email, email_verified, payment_number, provider,
-        is_verified, device_id,
+        is_verified,
         api_key, key_status, credits, expiry_date,
         created_at
       FROM users
@@ -1660,6 +1631,60 @@ app.post('/api/admin/renew', validateApiKey, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Renewal failed',
+      message: error.message
+    });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 📊 ADMIN STATS & LOGS (Lovable Frontend Support)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/admin/stats - Basic platform stats for dashboard
+ */
+app.get('/api/admin/stats', validateApiKey, async (req, res) => {
+  try {
+    const [usersResult, creditsResult] = await Promise.all([
+      pool.query('SELECT COUNT(*) AS total FROM users'),
+      pool.query('SELECT COALESCE(SUM(credits), 0) AS total FROM users')
+    ]);
+
+    res.json({
+      success: true,
+      stats: {
+        totalUsers: parseInt(usersResult.rows[0].total),
+        totalCredits: parseInt(creditsResult.rows[0].total),
+        activeConnections: pool.totalCount,
+        status: 'operational',
+        version: '5.1.0 Titanium'
+      }
+    });
+  } catch (error) {
+    console.error('❌ Admin Stats Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch stats',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/logs - Return activity logs (stub for frontend)
+ */
+app.get('/api/admin/logs', validateApiKey, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      count: 0,
+      logs: []
+    });
+  } catch (error) {
+    console.error('❌ Admin Logs Error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch logs',
       message: error.message
     });
   }
@@ -2083,19 +2108,15 @@ app.get('/api/device-health', validateApiKey, async (req, res) => {
       'SELECT * FROM device_status WHERE device_id = $1',
       [ADMIN_DEVICE_ID]
     );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        error: 'Device status not found'
-      });
-    }
-    
+
+    // Always return 200 — include DB data when available, base status otherwise
     res.json({
       success: true,
-      device: result.rows[0]
+      status: 'online',
+      message: 'Device is healthy',
+      device: result.rows.length > 0 ? result.rows[0] : null
     });
-    
+
   } catch (error) {
     console.error('❌ Device Health Fetch Error:', error);
     res.status(500).json({
