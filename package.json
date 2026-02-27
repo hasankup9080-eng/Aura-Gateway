@@ -36,7 +36,8 @@
     "google-libphonenumber": "^3.2.34",
     "nodemailer": "^6.9.7",
     "express-rate-limit": "^7.1.5",
-    "axios": "^1.6.2"
+    "axios": "^1.6.2",
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
