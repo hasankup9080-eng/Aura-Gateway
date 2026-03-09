@@ -1,20 +1,20 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * ⚡ AURA GATEWAY v5.4 - RAILWAY HARDENED + AUTH STATUS FIX
+ * ⚡ AURA GATEWAY v5.4.1 - CASE-INSENSITIVE PROVIDER FIX
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 🔧 WHAT'S FIXED IN v5.4:
+ * 🔧 WHAT'S FIXED IN v5.4.1:
  *
- * FIX 1 — TRUST PROXY FOR RAILWAY (CRITICAL)
- *   Issue: ERR_ERL_UNEXPECTED_X_FORWARDED_FOR validation error in Railway logs
- *          Rate limiting was receiving proxy IP instead of real client IP
- *   Fix:   Added app.set('trust proxy', 1) immediately after Express init
- *          Now correctly reads X-Forwarded-For header from Railway's reverse proxy
+ * FIX 3 — CASE-INSENSITIVE PROVIDER VALIDATION
+ *   Issue: Frontend sends 'bkash' but backend expects 'bKash' (case-sensitive)
+ *          This caused "Invalid payment provider" errors during signup
+ *   Fix:   Provider validation now converts input to lowercase before checking
+ *          Stored in database as lowercase for consistency (bkash/nagad/rocket)
+ *          Database constraint updated to accept lowercase values
  *
- * FIX 2 — AUTH STATUS CODE CORRECTION
- *   Issue: Password verification failures should return 401 (Unauthorized)
- *   Fix:   All authentication failures now consistently return 401 status
- *          This ensures security audits and TestSprite pass correctly
+ * ✅ ALL v5.4 FIXES PRESERVED:
+ *   - FIX 1: Trust proxy for Railway (app.set('trust proxy', 1))
+ *   - FIX 2: Auth status codes (401 for failed authentication)
  *
  * ✅ ALL v5.3 FEATURES PRESERVED (Email / OTP Layer):
  *   - BUG 1 FIXED: Singleton SMTP transporter (no rebuild per send)
@@ -102,6 +102,9 @@ const VPN_DETECTION = {
   api:     'http://ip-api.com/json/',
   timeout: 5000
 };
+
+// Valid payment providers (stored as lowercase for consistency)
+const VALID_PROVIDERS = ['bkash', 'nagad', 'rocket'];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 📧 EMAIL — SINGLETON TRANSPORTER  (v5.3 FIX: BUG 1 + BUG 5)
@@ -425,7 +428,7 @@ pool.on('error',   (err) => console.error('💥 Database error:', err));
 const initDatabase = async () => {
   try {
     console.log('\n════════════════════════════════════════════════════════════════');
-    console.log('📊 Initializing database schema (v5.4 Railway Hardened)...');
+    console.log('📊 Initializing database schema (v5.4.1 Provider Fix)...');
     console.log('════════════════════════════════════════════════════════════════\n');
 
     // ── Core Tables ───────────────────────────────────────────────────────
@@ -605,21 +608,33 @@ const initDatabase = async () => {
       console.log('✅ Constraint: users.api_key UNIQUE verified');
     } catch (e) { console.log('⚠️  Constraint: users.api_key UNIQUE error:', e.message); }
 
+    // v5.4.1 FIX: Update provider constraint to accept lowercase values
     try {
+      // Drop old constraint if it exists
+      await pool.query(`
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_provider_check') THEN
+            ALTER TABLE users DROP CONSTRAINT users_provider_check;
+          END IF;
+        END $$;
+      `);
+      
+      // Add new constraint with lowercase providers
       await pool.query(`
         DO $$
         BEGIN
           IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_provider_check') THEN
             ALTER TABLE users ADD CONSTRAINT users_provider_check
-            CHECK (provider IN ('bKash', 'Nagad', 'Rocket'));
+            CHECK (provider IN ('bkash', 'nagad', 'rocket'));
           END IF;
         END $$;
       `);
-      console.log('✅ Constraint: users.provider CHECK verified');
+      console.log('✅ Constraint: users.provider CHECK updated (lowercase)');
     } catch (e) { console.log('⚠️  Constraint: users.provider CHECK error:', e.message); }
 
     console.log('\n════════════════════════════════════════════════════════════════');
-    console.log('🎉 Database initialization complete (v5.4)!');
+    console.log('🎉 Database initialization complete (v5.4.1)!');
     console.log('════════════════════════════════════════════════════════════════\n');
 
   } catch (error) {
@@ -687,6 +702,29 @@ const validateEmail = (email) => {
   if (!email || typeof email !== 'string') return { valid: false, error: 'Email is required' };
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { valid: false, error: 'Invalid email format' };
   return { valid: true, error: null };
+};
+
+/**
+ * v5.4.1 FIX: Case-insensitive provider validation
+ * Converts provider to lowercase and checks against valid list
+ * @returns {valid: boolean, normalized: string|null, error: string|null}
+ */
+const validateProvider = (provider) => {
+  if (!provider || typeof provider !== 'string') {
+    return { valid: false, normalized: null, error: 'Payment provider is required' };
+  }
+  
+  const normalized = provider.toLowerCase().trim();
+  
+  if (!VALID_PROVIDERS.includes(normalized)) {
+    return { 
+      valid: false, 
+      normalized: null, 
+      error: `Invalid payment provider. Must be one of: ${VALID_PROVIDERS.join(', ')}` 
+    };
+  }
+  
+  return { valid: true, normalized, error: null };
 };
 
 const formatTimestamp = (date) => date ? date.toISOString() : null;
@@ -779,11 +817,12 @@ app.get('/', (req, res) => {
   res.json({
     success:  true,
     app:      '⚡ AURA GATEWAY',
-    version:  '5.4.0 Railway Hardened',
+    version:  '5.4.1 Provider Fix',
     database: 'PostgreSQL',
     status:   'operational',
     features: {
       trust_proxy_enabled:       true,
+      case_insensitive_provider: true,
       advanced_phone_validation: true,
       email_otp_system:          true,
       otp_expiry_enforced:       true,
@@ -817,7 +856,11 @@ app.get('/health', async (req, res) => {
 /**
  * POST /api/signup
  *
- * v5.3 fixes applied:
+ * v5.4.1 FIX: Case-insensitive provider validation
+ *  • Accepts 'bKash', 'bkash', 'BKASH', etc.
+ *  • Stores as lowercase in database: 'bkash', 'nagad', 'rocket'
+ *
+ * v5.3 fixes preserved:
  *  • Uses singleton emailTransporter (BUG 1)
  *  • Stores otp_expires_at (BUG 3)
  *  • sendOTPEmail returns {success,error} — SMTP reason surfaced in dev (BUG 4)
@@ -846,9 +889,19 @@ app.post('/api/signup', signupRateLimiter, detectVPN, async (req, res) => {
     if (!paymentValidation.valid) return res.status(400).json({ success: false, error: 'Invalid payment number', message: paymentValidation.error });
     const normalizedPayment = paymentValidation.normalized;
 
-    if (!['bKash', 'Nagad', 'Rocket'].includes(provider)) {
-      return res.status(400).json({ success: false, error: 'Invalid payment provider', allowed: ['bKash', 'Nagad', 'Rocket'] });
+    // v5.4.1 FIX: Case-insensitive provider validation
+    const providerValidation = validateProvider(provider);
+    if (!providerValidation.valid) {
+      console.log(`\n⚠️  PROVIDER VALIDATION FAILED — Input: "${provider}" | Error: ${providerValidation.error}`);
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid payment provider', 
+        message: providerValidation.error,
+        allowed: VALID_PROVIDERS,
+        note: 'Provider names are case-insensitive'
+      });
     }
+    const normalizedProvider = providerValidation.normalized; // lowercase: bkash/nagad/rocket
 
     // Rate limit
     if (await checkOTPCooldown(email)) {
@@ -888,6 +941,7 @@ app.post('/api/signup', signupRateLimiter, detectVPN, async (req, res) => {
         }
       }
 
+      // v5.4.1: Store provider as lowercase
       await client.query(
         `INSERT INTO users (
            id, username, phone, email, payment_number, provider,
@@ -896,7 +950,7 @@ app.post('/api/signup', signupRateLimiter, detectVPN, async (req, res) => {
            is_verified, email_verified,
            api_key, key_status, credits
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,false,false,$11,'pending',0)`,
-        [userId, username, normalizedPhone, email.toLowerCase(), normalizedPayment, provider,
+        [userId, username, normalizedPhone, email.toLowerCase(), normalizedPayment, normalizedProvider,
          passwordHash, passwordSalt, otpCode, otpExpiresAt, saasApiKey]
       );
 
@@ -918,10 +972,11 @@ app.post('/api/signup', signupRateLimiter, detectVPN, async (req, res) => {
       await client.query('COMMIT');
 
       console.log(`\n════════════════════════════════════════════════════════════════`);
-      console.log(`👤 NEW USER SIGNUP (v5.4)`);
+      console.log(`👤 NEW USER SIGNUP (v5.4.1)`);
       console.log(`   Username:    ${username}`);
       console.log(`   Phone:       ${normalizedPhone} ✓`);
       console.log(`   Email:       ${email} ✓ (OTP sent)`);
+      console.log(`   Provider:    ${normalizedProvider} (normalized from "${provider}")`);
       console.log(`   OTP Expires: ${otpExpiresAt.toISOString()}`);
       console.log(`   API Key:     ${saasApiKey.substring(0, 30)}...`);
       console.log(`   IP:          ${req.ip || 'unknown'}`);
@@ -930,7 +985,16 @@ app.post('/api/signup', signupRateLimiter, detectVPN, async (req, res) => {
       return res.status(201).json({
         success:        true,
         message:        'User registered successfully. OTP sent to your email.',
-        user: { id: userId, username, phone: normalizedPhone, email: email.toLowerCase(), api_key: saasApiKey, key_status: 'pending', credits: 0 },
+        user: { 
+          id: userId, 
+          username, 
+          phone: normalizedPhone, 
+          email: email.toLowerCase(), 
+          provider: normalizedProvider,
+          api_key: saasApiKey, 
+          key_status: 'pending', 
+          credits: 0 
+        },
         otp_sent:       true,
         otp_method:     'email',
         otp_expires_in: `${OTP_EXPIRY_MINUTES} minutes`,
@@ -1133,7 +1197,7 @@ app.get('/api/admin/stats', validateApiKey, async (req, res) => {
       pool.query('SELECT COUNT(*) AS total FROM users'),
       pool.query('SELECT COALESCE(SUM(credits), 0) AS total FROM users')
     ]);
-    res.json({ success: true, stats: { totalUsers: parseInt(usersResult.rows[0].total), totalCredits: parseInt(creditsResult.rows[0].total), activeConnections: pool.totalCount, status: 'operational', version: '5.4.0 Railway Hardened' } });
+    res.json({ success: true, stats: { totalUsers: parseInt(usersResult.rows[0].total), totalCredits: parseInt(creditsResult.rows[0].total), activeConnections: pool.totalCount, status: 'operational', version: '5.4.1 Provider Fix' } });
   } catch (error) {
     console.error('❌ Admin Stats Error:', error);
     res.status(500).json({ success: false, error: 'Failed to fetch stats', message: error.message });
@@ -1412,13 +1476,17 @@ const startServer = async () => {
 
     app.listen(PORT, () => {
       console.log('\n════════════════════════════════════════════════════════════════');
-      console.log('⚡ AURA GATEWAY v5.4 - RAILWAY HARDENED + AUTH STATUS FIX');
+      console.log('⚡ AURA GATEWAY v5.4.1 - CASE-INSENSITIVE PROVIDER FIX');
       console.log('════════════════════════════════════════════════════════════════');
       console.log(`📡 Server:      http://localhost:${PORT}`);
       console.log(`🌍 Environment: ${NODE_ENV}`);
       console.log(`💾 Database:    PostgreSQL (Railway)`);
       console.log('════════════════════════════════════════════════════════════════');
-      console.log('🔧 v5.4 Critical Fixes:');
+      console.log('🔧 v5.4.1 New Fix:');
+      console.log('   - FIX 3: Case-insensitive provider validation (bKash/bkash/BKASH) ✓');
+      console.log('   - Providers stored as lowercase: bkash, nagad, rocket ✓');
+      console.log('════════════════════════════════════════════════════════════════');
+      console.log('✅ All v5.4 fixes preserved:');
       console.log('   - FIX 1: Trust proxy enabled for Railway reverse proxy ✓');
       console.log('   - FIX 2: Auth failures return 401 (not 400) ✓');
       console.log('════════════════════════════════════════════════════════════════');
